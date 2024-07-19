@@ -1,6 +1,4 @@
-Here's your text formatted with Markdown syntax:
 
----
 
 ## Symmetrical Command Set for BrainZig
 **More complicated BrainFuck for synthetic life experiments.**
