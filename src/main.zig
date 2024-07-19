@@ -1,20 +1,18 @@
 const std = @import("std");
 
-const MEMORY_SIZE: usize = 30000;
-
 pub const Interpreter = struct {
-    code: []const u8,
+    code: []u8,
     pc: usize,
-    pointer: usize,
-    memory: [MEMORY_SIZE]u8,
+    head0: usize,
+    head1: usize,
     output: std.ArrayList(u8),
 
-    pub fn init(code: []const u8, allocator: std.mem.Allocator) !Interpreter {
+    pub fn init(code: []u8, allocator: std.mem.Allocator) !Interpreter {
         return Interpreter{
             .code = code,
             .pc = 0,
-            .pointer = 0,
-            .memory = [_]u8{0} ** MEMORY_SIZE,
+            .head0 = 0,
+            .head1 = 0,
             .output = std.ArrayList(u8).init(allocator),
         };
     }
@@ -32,41 +30,91 @@ pub const Interpreter = struct {
             
             switch (command) {
                 '>' => {
-                    if (self.pointer < MEMORY_SIZE - 1) self.pointer += 1;
-                    try stdout.print("  Moved pointer right to {d}\n", .{self.pointer});
+                    if (self.head0 < self.code.len - 1) self.head0 += 1;
+                    try stdout.print("  Moved head0 right to {d}\n", .{self.head0});
                 },
                 '<' => {
-                    if (self.pointer > 0) self.pointer -= 1;
-                    try stdout.print("  Moved pointer left to {d}\n", .{self.pointer});
+                    if (self.head0 > 0) self.head0 -= 1;
+                    try stdout.print("  Moved head0 left to {d}\n", .{self.head0});
+                },
+                '}' => {
+                    if (self.head1 < self.code.len - 1) self.head1 += 1;
+                    try stdout.print("  Moved head1 right to {d}\n", .{self.head1});
+                },
+                '{' => {
+                    if (self.head1 > 0) self.head1 -= 1;
+                    try stdout.print("  Moved head1 left to {d}\n", .{self.head1});
                 },
                 '+' => {
-                    self.memory[self.pointer] +%= 1;
-                    try stdout.print("  Incremented value at pointer {d} to {d}\n", .{self.pointer, self.memory[self.pointer]});
+                    self.code[self.head0] +%= 1;
+                    try stdout.print("  Incremented value at head0 {d} to {d}\n", .{self.head0, self.code[self.head0]});
                 },
                 '-' => {
-                    self.memory[self.pointer] -%= 1;
-                    try stdout.print("  Decremented value at pointer {d} to {d}\n", .{self.pointer, self.memory[self.pointer]});
+                    self.code[self.head0] -%= 1;
+                    try stdout.print("  Decremented value at head0 {d} to {d}\n", .{self.head0, self.code[self.head0]});
+                },
+                '*' => {
+                    self.code[self.head1] +%= 1;
+                    try stdout.print("  Incremented value at head1 {d} to {d}\n", .{self.head1, self.code[self.head1]});
+                },
+                '_' => {
+                    self.code[self.head1] -%= 1;
+                    try stdout.print("  Decremented value at head1 {d} to {d}\n", .{self.head1, self.code[self.head1]});
                 },
                 '.' => {
-                    try self.output.append(self.memory[self.pointer]);
-                    try stdout.print("  Output: '{c}' (ASCII: {d})\n", .{self.memory[self.pointer], self.memory[self.pointer]});
+                    self.code[self.head1] = self.code[self.head0];
+                    try stdout.print("  Copied value from head0 to head1: {d}\n", .{self.code[self.head1]});
                 },
                 ',' => {
-                    try stdout.print("  Input command not implemented\n", .{});
+                    self.code[self.head0] = self.code[self.head1];
+                    try stdout.print("  Copied value from head1 to head0: {d}\n", .{self.code[self.head0]});
+                },
+                '&' => {
+                    self.code[self.head0] +%= self.code[self.head1];
+                    try stdout.print("  Added head1 to head0, result: {d}\n", .{self.code[self.head0]});
+                },
+                '%' => {
+                    self.code[self.head0] -%= self.code[self.head1];
+                    try stdout.print("  Subtracted head1 from head0, result: {d}\n", .{self.code[self.head0]});
+                },
+                ':' => {
+                    self.code[self.head1] +%= self.code[self.head0];
+                    try stdout.print("  Added head0 to head1, result: {d}\n", .{self.code[self.head1]});
+                },
+                ';' => {
+                    self.code[self.head1] -%= self.code[self.head0];
+                    try stdout.print("  Subtracted head0 from head1, result: {d}\n", .{self.code[self.head1]});
                 },
                 '[' => {
-                    if (self.memory[self.pointer] == 0) {
-                        try self.findMatchingBracket('[');
+                    if (self.code[self.head0] == 0) {
+                        try self.findMatchingBracket('[', ']');
                         try stdout.print("  Jumped forward to matching ']' at position {d}\n", .{self.pc});
                     } else {
                         try stdout.print("  Entered loop\n", .{});
                     }
                 },
                 ']' => {
-                    if (self.memory[self.pointer] != 0) {
-                        try self.findMatchingBracket(']');
+                    if (self.code[self.head0] != 0) {
+                        try self.findMatchingBracket(']', '[');
                         self.pc -= 1; // Adjust to reprocess the opening bracket
                         try stdout.print("  Jumped back to matching '[' at position {d}\n", .{self.pc});
+                    } else {
+                        try stdout.print("  Exited loop\n", .{});
+                    }
+                },
+                '(' => {
+                    if (self.code[self.head1] == 0) {
+                        try self.findMatchingBracket('(', ')');
+                        try stdout.print("  Jumped forward to matching ')' at position {d}\n", .{self.pc});
+                    } else {
+                        try stdout.print("  Entered loop\n", .{});
+                    }
+                },
+                ')' => {
+                    if (self.code[self.head1] != 0) {
+                        try self.findMatchingBracket(')', '(');
+                        self.pc -= 1; // Adjust to reprocess the opening bracket
+                        try stdout.print("  Jumped back to matching '(' at position {d}\n", .{self.pc});
                     } else {
                         try stdout.print("  Exited loop\n", .{});
                     }
@@ -78,17 +126,12 @@ pub const Interpreter = struct {
             self.pc += 1;
         }
 
-        try stdout.print("\nFinal output: ", .{});
-        for (self.output.items) |char| {
-            try stdout.print("{c}", .{char});
-        }
-        try stdout.print("\n", .{});
+        try stdout.print("\nFinal program tape state: {s}\n", .{self.code});
+
     }
 
-    pub fn findMatchingBracket(self: *Interpreter, bracket: u8) !void {
-        const direction: isize = if (bracket == '[') 1 else -1;
-        const opening = '[';
-        const closing = ']';
+    fn findMatchingBracket(self: *Interpreter, opening: u8, closing: u8) !void {
+        const direction: isize = if (opening == '[' or opening == '(') 1 else -1;
         var depth: isize = 0;
 
         while (true) {
@@ -130,13 +173,19 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
 
     if (args.len < 2) {
-        std.debug.print("Please provide a Brainfuck program as an argument.\n", .{});
-        std.debug.print("Usage: {s} '<brainfuck program>'\n", .{args[0]});
+        std.debug.print("Please provide a BrainZig program as an argument.\n", .{});
+        std.debug.print("Usage: {s} '<brainflex program>'\n", .{args[0]});
         return;
     }
 
-    var interpreter = try Interpreter.init(args[1], allocator);
+    const code = try allocator.dupe(u8, args[1]);
+    defer allocator.free(code);
+
+    var interpreter = try Interpreter.init(code, allocator);
     defer interpreter.deinit();
 
-    try interpreter.run();
+    interpreter.run() catch |err| {
+        std.debug.print("Error occurred: {}\n", .{err});
+        return;
+    };
 }
