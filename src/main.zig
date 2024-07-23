@@ -1,217 +1,236 @@
 const std = @import("std");
+const stdout = std.io.getStdOut().writer();
 
-const TAPE_SIZE = 512;
-const MAX_STEPS = 512;
+const TAPE_SIZE = 30000;
+const MAX_STEPS = 1000000;
 
 const Interpreter = struct {
     tape: [TAPE_SIZE]u8,
-    head0: usize,
-    head1: usize,
+    heads: []usize,
     instruction_head: usize,
-    data_head: usize,
+    active_head: usize,
     steps: usize,
-    output: std.ArrayList(u8),
+    num_heads: usize,
 
-    pub fn init(allocator: std.mem.Allocator) !Interpreter {
+    fn init(num_heads: usize, allocator: std.mem.Allocator) !Interpreter {
+        const heads = try allocator.alloc(usize, num_heads);
+        @memset(heads, 0);
         return Interpreter{
-            .tape = [_]u8{0} ** TAPE_SIZE,
-            .head0 = 0,
-            .head1 = 0,
+            .tape = std.mem.zeroes([TAPE_SIZE]u8),
+            .heads = heads,
             .instruction_head = 0,
-            .data_head = 1,
+            .active_head = 0,
             .steps = 0,
-            .output = try std.ArrayList(u8).initCapacity(allocator, 1000),
+            .num_heads = num_heads,
         };
     }
 
-    pub fn deinit(self: *Interpreter) void {
-        self.output.deinit();
+    fn deinit(self: *Interpreter, allocator: std.mem.Allocator) void {
+        allocator.free(self.heads);
     }
 
-    pub fn loadProgram(self: *Interpreter, program: []const u8) void {
-        for (program, 0..) |byte, i| {
-            if (i >= TAPE_SIZE) break;
-            self.tape[i] = byte;
+    fn interpret(self: *Interpreter, program: []const u8) !void {
+        while (self.steps < MAX_STEPS and self.instruction_head < program.len) {
+            try self.executeInstruction(program);
+            self.steps += 1;
+        }
+
+        if (self.steps >= MAX_STEPS) {
+            try stdout.print("Program exceeded maximum number of steps.\n", .{});
+        } else {
+            try stdout.print("Program completed successfully.\n", .{});
         }
     }
 
-pub fn run(self: *Interpreter) !void {
-    const stdout = std.io.getStdOut().writer();
-
-    while (self.steps < MAX_STEPS) {
-        const instruction = self.tape[self.getInstructionHead()];
-        if (instruction == 0) break; // End of program
-
-        try stdout.print("Step {d}: Executing '{c}' at position {d}\n", .{
-            self.steps + 1, instruction, self.getInstructionHead()
-        });
+    fn executeInstruction(self: *Interpreter, program: []const u8) !void {
+        const instruction = program[self.instruction_head];
+        try stdout.print("Heads: ", .{});
+        for (self.heads, 0..) |head, i| {
+            try stdout.print("{c}: {d}, ", .{ self.headIndexToChar(i), head });
+        }
 
         switch (instruction) {
             '>' => {
-                self.moveHead(self.data_head, true);
-                try stdout.print("Moved data head right. Instruction head moved right.\n", .{});
+                self.moveHead(self.active_head, true);
+                self.instruction_head += 1;
+                try stdout.print("Active head moved right.\n", .{});
             },
             '<' => {
-                self.moveHead(self.data_head, false);
-                try stdout.print("Moved data head left. Instruction head moved right.\n", .{});
+                self.moveHead(self.active_head, false);
+                self.instruction_head += 1;
+                try stdout.print("Active head moved left.\n", .{});
             },
             '+' => {
-                self.tape[self.getDataHead()] +%= 1;
-                try stdout.print("Incremented value at data head. Instruction head moved right.\n", .{});
+                self.tape[self.heads[self.active_head]] +%= 1;
+                self.instruction_head += 1;
+                try stdout.print("Incremented byte at active head.\n", .{});
             },
             '-' => {
-                self.tape[self.getDataHead()] -%= 1;
-                try stdout.print("Decremented value at data head. Instruction head moved right.\n", .{});
+                self.tape[self.heads[self.active_head]] -%= 1;
+                self.instruction_head += 1;
+                try stdout.print("Decremented byte at active head.\n", .{});
             },
             '.' => {
-                try self.output.append(self.tape[self.getDataHead()]);
-                try stdout.print("Output: '{c}'. Instruction head moved right.\n", .{self.tape[self.getDataHead()]});
+                const next_head = (self.active_head + 1) % self.num_heads;
+                const byte_to_copy = self.tape[self.heads[self.active_head]];
+                self.tape[self.heads[next_head]] = byte_to_copy;
+                self.instruction_head += 1;
+                try stdout.print("Copied byte {d} from active head to next head.\n", .{byte_to_copy});
             },
             ',' => {
-                // Input not implemented in this version
-                try stdout.print("Input not implemented. Instruction head moved right.\n", .{});
+                const prev_head = (self.active_head + self.num_heads - 1) % self.num_heads;
+                const byte_to_copy = self.tape[self.heads[prev_head]];
+                self.tape[self.heads[self.active_head]] = byte_to_copy;
+                self.instruction_head += 1;
+                try stdout.print("Copied byte {d} from previous head to active head.\n", .{byte_to_copy});
             },
-            '[' => try self.handleOpenBracket(),
-            ']' => try self.handleCloseBracket(),
-            '~' => {
-                self.switchHeads();
-                try stdout.print("Switched instruction and data heads. Instruction head moved right.\n", .{});
+            '&' => {
+                const next_head = (self.active_head + 1) % self.num_heads;
+                self.tape[self.heads[self.active_head]] +%= self.tape[self.heads[next_head]];
+                self.instruction_head += 1;
+                try stdout.print("Added byte at next head to byte at active head. Result: {d}\n", .{self.tape[self.heads[self.active_head]]});
             },
+            '%' => {
+                const next_head = (self.active_head + 1) % self.num_heads;
+                self.tape[self.heads[self.active_head]] -%= self.tape[self.heads[next_head]];
+                self.instruction_head += 1;
+                try stdout.print("Subtracted byte at next head from byte at active head. Result: {d}\n", .{self.tape[self.heads[self.active_head]]});
+            },
+            ':' => {
+                const next_head = (self.active_head + 1) % self.num_heads;
+                self.tape[self.heads[next_head]] +%= self.tape[self.heads[self.active_head]];
+                self.instruction_head += 1;
+                try stdout.print("Added byte at active head to byte at next head. Result: {d}\n", .{self.tape[self.heads[next_head]]});
+            },
+            ';' => {
+                const next_head = (self.active_head + 1) % self.num_heads;
+                self.tape[self.heads[next_head]] -%= self.tape[self.heads[self.active_head]];
+                self.instruction_head += 1;
+                try stdout.print("Subtracted byte at active head from byte at next head. Result: {d}\n", .{self.tape[self.heads[next_head]]});
+            },
+            '[' => try self.handleOpenBracket(program),
+            ']' => try self.handleCloseBracket(program),
+            '^' => try self.switchActiveHead(program),
             else => {
-                try stdout.print("Ignored non-command character. Instruction head moved right.\n", .{});
+                self.instruction_head += 1;
+                try stdout.print("Ignored non-command character.\n", .{});
             },
         }
 
-        self.moveHead(self.instruction_head, true);
-        self.steps += 1;
-        try self.printState(stdout);
+        try stdout.print("Heads: ", .{});
+        for (self.heads, 0..) |head, i| {
+            try stdout.print("{c}: {d}, ", .{ self.headIndexToChar(i), head });
+        }
+        try stdout.print("Instruction Head: {d}, Active Head: {c}\n", .{ self.instruction_head, self.headIndexToChar(self.active_head) });
+        try self.printTapeNearHeads();
     }
 
-    if (self.steps >= MAX_STEPS) {
-        try stdout.print("\nExecution halted: Maximum steps ({d}) reached.\n", .{MAX_STEPS});
+    fn moveHead(self: *Interpreter, head_index: usize, forward: bool) void {
+        self.heads[head_index] = if (forward)
+            (self.heads[head_index] + 1) % TAPE_SIZE
+        else
+            (self.heads[head_index] + TAPE_SIZE - 1) % TAPE_SIZE;
     }
 
-    try self.printFinalState();
-}
+    fn switchActiveHead(self: *Interpreter, program: []const u8) !void {
+        self.instruction_head += 1;
+        if (self.instruction_head >= program.len) {
+            return error.UnexpectedEndOfProgram;
+        }
+        const head_index = try self.charToHeadIndex(program[self.instruction_head]);
+        self.active_head = head_index;
+        self.instruction_head += 1;
+        try stdout.print("Switched active head to head{c}.\n", .{self.headIndexToChar(self.active_head)});
+    }
 
-fn findMatchingBracket(self: *Interpreter, start: u8, end: u8, forward: bool) !usize {
-    var depth: isize = 0;
-    var current_pos = self.getInstructionHead();
-
-    while (self.steps < MAX_STEPS) {
-        if (forward) {
-            current_pos = (current_pos + 1) % TAPE_SIZE;
+    fn handleOpenBracket(self: *Interpreter, program: []const u8) !void {
+        self.instruction_head += 1;
+        if (self.instruction_head >= program.len) {
+            return error.UnexpectedEndOfProgram;
+        }
+        const head_index = try self.charToHeadIndex(program[self.instruction_head]);
+        
+        if (self.tape[self.heads[head_index]] == 0) {
+            var depth: usize = 1;
+            while (depth > 0) {
+                self.instruction_head += 1;
+                if (self.instruction_head >= program.len) {
+                    return error.UnmatchedBracket;
+                }
+                if (program[self.instruction_head] == '[') {
+                    depth += 1;
+                } else if (program[self.instruction_head] == ']') {
+                    depth -= 1;
+                }
+            }
+            self.instruction_head += 2;  // Skip the closing bracket and head index
         } else {
-            current_pos = (current_pos + TAPE_SIZE - 1) % TAPE_SIZE;
+            self.instruction_head += 1;
         }
+    }
 
-        const current_char = self.tape[current_pos];
-        if (current_char == start) {
-            depth += if (forward) 1 else -1;
-        } else if (current_char == end) {
-            depth += if (forward) -1 else 1;
+    fn handleCloseBracket(self: *Interpreter, program: []const u8) !void {
+        self.instruction_head += 1;
+        if (self.instruction_head >= program.len) {
+            return error.UnexpectedEndOfProgram;
         }
-
-        if (depth == 0) return current_pos;
-        self.steps += 1;
-    }
-
-    return error.UnmatchedBracket;
-}
-
-
-fn handleOpenBracket(self: *Interpreter) !void {
-    const current_value = self.tape[self.getDataHead()];
-    if (current_value == 0) {
-        // If the current cell is zero, jump past the matching ]
-        const matching_close = try self.findMatchingBracket('[', ']', true);
-        self.setInstructionHead(matching_close);
-    } else {
-        // If non-zero, just move to the next instruction
-        self.moveHead(self.instruction_head, true);
-    }
-}
-
-fn handleCloseBracket(self: *Interpreter) !void {
-    const current_value = self.tape[self.getDataHead()];
-    if (current_value != 0) {
-        // If the current cell is non-zero, jump back to the matching [
-        const matching_open = try self.findMatchingBracket(']', '[', false);
-        self.setInstructionHead(matching_open);
-        self.moveHead(self.instruction_head, true); // Move past the [
-    } else {
-        // If zero, just move to the next instruction
-        self.moveHead(self.instruction_head, true);
-    }
-}
-
-    fn getInstructionHead(self: Interpreter) usize {
-        return if (self.instruction_head == 0) self.head0 else self.head1;
-    }
-
-    fn getDataHead(self: Interpreter) usize {
-        return if (self.data_head == 0) self.head0 else self.head1;
-    }
-
-    fn setInstructionHead(self: *Interpreter, pos: usize) void {
-        if (self.instruction_head == 0) {
-            self.head0 = pos;
+        const head_index = try self.charToHeadIndex(program[self.instruction_head]);
+        
+        if (self.tape[self.heads[head_index]] != 0) {
+            var depth: usize = 1;
+            while (depth > 0) {
+                if (self.instruction_head < 2) {
+                    return error.UnmatchedBracket;
+                }
+                self.instruction_head -= 1;
+                if (program[self.instruction_head] == ']') {
+                    depth += 1;
+                } else if (program[self.instruction_head] == '[') {
+                    depth -= 1;
+                }
+            }
+            self.instruction_head -= 1;  // Move to the head index before the opening bracket
         } else {
-            self.head1 = pos;
+            self.instruction_head += 1;
         }
     }
 
-    fn moveHead(self: *Interpreter, head: usize, forward: bool) void {
-        if (head == 0) {
-            self.head0 = if (forward)
-                (self.head0 + 1) % TAPE_SIZE
-            else
-                (self.head0 + TAPE_SIZE - 1) % TAPE_SIZE;
-        } else {
-            self.head1 = if (forward)
-                (self.head1 + 1) % TAPE_SIZE
-            else
-                (self.head1 + TAPE_SIZE - 1) % TAPE_SIZE;
-        }
-    }
-
-    fn switchHeads(self: *Interpreter) void {
-        self.instruction_head = 1 - self.instruction_head;
-        self.data_head = 1 - self.data_head;
-    }
-
-fn printState(self: Interpreter, writer: anytype) !void {
-    try writer.print("Head0: {d}, Head1: {d}, Instruction Head: {d}, Data Head: {d}\n", .{
-        self.head0, self.head1, self.getInstructionHead(), self.getDataHead()
-    });
-
-    const min_head = @min(self.head0, self.head1);
-    const max_head = @max(self.head0, self.head1);
-    const start = if (min_head >= 5) min_head - 5 else 0;
-    const end = @min(TAPE_SIZE - 1, max_head + 5);
-
-    try writer.print("Tape near heads (offset {d}): ", .{start});
-    var i: usize = start;
-    while (i <= end) : (i += 1) {
-        if (i == self.head0) {
-            try writer.print("[{d}]", .{self.tape[i]});
-        } else if (i == self.head1) {
-            try writer.print("({d})", .{self.tape[i]});
-        } else {
-            try writer.print(" {d} ", .{self.tape[i]});
-        }
-    }
-    try writer.print("\n\n", .{});
-}
-
-    fn printFinalState(self: Interpreter) !void {
-        const stdout = std.io.getStdOut().writer();
-        try stdout.print("\nExecution completed in {d} steps.\n", .{self.steps});
-        try stdout.print("Final output: ", .{});
-        for (self.output.items) |byte| {
-            try stdout.print("{c}", .{byte});
+    fn printTapeNearHeads(self: Interpreter) !void {
+        try stdout.print("Tape near heads: ", .{});
+        for (self.heads, 0..) |head, i| {
+            const start = if (head >= 5) head - 5 else 0;
+            const end = @min(head + 6, TAPE_SIZE);
+            try stdout.print("{c}: ", .{self.headIndexToChar(i)});
+            for (self.tape[start..end], start..) |value, j| {
+                if (j == head) {
+                    try stdout.print("[{d}] ", .{value});
+                } else {
+                    try stdout.print("{d} ", .{value});
+                }
+            }
+            try stdout.print("| ", .{});
         }
         try stdout.print("\n", .{});
+    }
+
+    fn charToHeadIndex(self: Interpreter, c: u8) !usize {
+        _ = self;
+        if (c >= '0' and c <= '9') {
+            return c - '0';
+        } else if (c >= 'A' and c <= 'Z') {
+            return c - 'A' + 10;
+        } else {
+            return error.InvalidHeadIndex;
+        }
+    }
+
+    fn headIndexToChar(self: Interpreter, index: usize) u8 {
+        _ = self;
+        if (index < 10) {
+            return @as(u8, @intCast(index)) + '0';
+        } else {
+            return @as(u8, @intCast(index - 10)) + 'A';
+        }
     }
 };
 
@@ -220,22 +239,10 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var interpreter = try Interpreter.init(allocator);
-    defer interpreter.deinit();
+    const num_heads = 36;  // 0-9 and A-Z
+    var interpreter = try Interpreter.init(num_heads, allocator);
+    defer interpreter.deinit(allocator);
 
-    const stdin = std.io.getStdIn().reader();
-    var program = std.ArrayList(u8).init(allocator);
-    defer program.deinit();
-
-    // Read the program from stdin
-    while (true) {
-        const byte = stdin.readByte() catch |err| switch (err) {
-            error.EndOfStream => break,
-            else => return err,
-        };
-        try program.append(byte);
-    }
-
-    interpreter.loadProgram(program.items);
-    try interpreter.run();
+    const program = "++++++++[>++++[>++>+++>+++>+<<<<-]>+>+>->>+[<]<-]>>.>---.+++++++..+++.>>.<-.<.+++.------.--------.>>+.>++.";
+    try interpreter.interpret(program);
 }
